@@ -10,6 +10,15 @@ data:
     batch_size: 8
     patch_size: 4
 
+# TODO: Erase this (we don't classify MovingMNIST)
+# classify_data:
+#     name: moving_mnist_classify
+#     data_dir: $SCRATCH/nesap-stl/data/classify
+#     #n_train: 1024
+#     #n_valid: 1024
+#     batch_size: 8
+#     patch_size: 4
+
 model:
     name: predrnn_pp
 
@@ -21,4 +30,4 @@ optimizer:
     lr: 0.001
 
 train:
-    n_epochs: 3
+    n_epochs: 15

@@ -13,9 +13,11 @@ class PredRNNPP(torch.nn.Module):
     """The PredRNN++ model"""
 
     def __init__(self, filter_size=3, num_dims=2,
-                 num_hidden=[128, 64, 64, 64, 16]):
+                 num_hidden=[128, 64, 64, 64, 16],
+                 classify=False):
         super().__init__()
 
+        self.classify = classify
         self.clstm = CausalLSTMStack(filter_size=filter_size,
                                      num_dims=num_dims,
                                      channels=num_hidden)
@@ -36,6 +38,9 @@ class PredRNNPP(torch.nn.Module):
         for t in range(x.shape[1]):
             h, c, m, z = self.clstm(x[:,t], h, c, m, z)
             outputs.append(self.decoder(h[-1])) #.permute(0, -1, 1, 2)
+
+        if self.classify:
+            return z
 
         # Stack outputs along time axis
         return torch.stack(outputs, dim=1)

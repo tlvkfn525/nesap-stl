@@ -3,29 +3,23 @@ Testing script for MovingMNIST examples
 """
 
 # System
-import math
+from models.cnn import CNNClassifier
 import os
 import argparse
 import logging
 
 # Externals
 import yaml
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 # Locals
-from datasets import moving_mnist
+from datasets import moving_mnist, get_data_loaders
 from trainers import get_trainer
 from models import predrnn_pp
 from utils.logging import config_logging
 from utils.distributed import init_workers, try_barrier
 
-import importlib
 from torch.utils.data import DataLoader
-
-from PIL import Image
 
 def parse_args():
     """Parse command line arguments."""
@@ -81,7 +75,7 @@ def test(model, device, test_loader, loss_config, threshold):
             batch_input, batch_target = batch[:,:-1], batch[:,1:]
             batch_output = model(batch_input)
             batch_loss = loss_func(batch_output, batch_target).item()
-            logging.info('batch %i loss %.4f', i + 1, batch_loss)
+            logging.info('batch %i loss %.4f', i, batch_loss)
             if batch_loss <= threshold:
                 correct += 1
             test_loss += batch_loss
@@ -128,14 +122,54 @@ def main():
 
     # Load the datasets
     test_data_loader = get_test_dataloader(**config['data'], n_test=args.ntest)
+    distributed = args.distributed_backend is not None
 
-    model = predrnn_pp.PredRNNPP()
+    do_classify = config.get('classify_data', None)
+    model = predrnn_pp.PredRNNPP(classify=(do_classify is not None))
     checkpoint_idx = str(args.checkpoint) if args.checkpoint >= 100 else ('0' + str(args.checkpoint))
     checkpoint = torch.load(os.path.join(output_dir, 'checkpoints', 'checkpoint_' + checkpoint_idx + '.pth.tar'), map_location=("cuda:" + str(gpu)))
     model.load_state_dict(checkpoint['model'])
     model = model.to(device)
     loss_config = config['loss']
-    test(model, device, test_data_loader, loss_config, threshold=args.threshold)
+
+    if do_classify is not None:
+        train_data_loader, valid_data_loader = get_data_loaders(
+            distributed=distributed, **config['classify_data'])
+        # TODO: require arguments to create class instance
+        classify_model = CNNClassifier()
+        criterion = torch.nn.CrossEntropyLoss().to(device)
+        optimizer = torch.optim.Adam(classify_model.parameters(), lr=0.001)
+        for epoch in range(int(config['train']['n_epochs'])):
+            train_avg_cost = 0
+            valid_avg_cost = 0
+
+            for batch, label in train_data_loader:
+                batch = batch.to(device)
+                label = label.to(device)
+
+                optimizer.zero_grad()
+                model_output = model(batch)
+                hypothesis = classify_model(model_output)
+                cost = criterion(hypothesis, label)
+                cost.backward()
+                optimizer.step()
+
+                train_avg_cost += cost / len(train_data_loader)
+            logging.info('[epoch {:>4}: train] cost = {:>.9}'.format(epoch + 1, train_avg_cost))
+
+            for batch, label in valid_data_loader:
+                batch = batch.to(device)
+                label = label.to(device)
+
+                optimizer.zero_grad()
+                model_output = model(batch)
+                hypothesis = classify_model(model_output)
+                cost = criterion(hypothesis, label)
+
+                valid_avg_cost += cost / len(valid_data_loader)
+            logging.info('[epoch {:>4}: valid] cost = {:>.9}'.format(epoch + 1, valid_avg_cost))
+    else:
+        test(model, device, test_data_loader, loss_config, threshold=args.threshold)
 
 if __name__ == '__main__':
     main()
