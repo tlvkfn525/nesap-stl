@@ -4,7 +4,7 @@ trainer: auto_regressive
 
 data:
     name: moving_mnist
-    data_dir: /home/tlvkfn525/work/nesap-stl/nesap-stl/data
+    data_dir: $SCRATCH/nesap-stl/data
     #n_train: 1024
     #n_valid: 1024
     batch_size: 8
@@ -22,6 +22,3 @@ optimizer:
 
 train:
     n_epochs: 3
-
-test:
-    f: /home/tlvkfn525/work/nesap-stl/nesap-stl/checkpoint/checkpoint_127.pth.tar

@@ -22,6 +22,7 @@ from models import predrnn_pp
 from utils.logging import config_logging
 from utils.distributed import init_workers, try_barrier
 
+import importlib
 from torch.utils.data import DataLoader
 
 from PIL import Image
@@ -44,9 +45,11 @@ def parse_args():
             help='Resume training from last checkpoint')
     add_arg('-v', '--verbose', action='store_true',
             help='Enable verbose logging')
-    add_arg('-n', '--ntest', type=int, default=16,
+    add_arg('-n', '--ntest', type=int, default=128,
             help='Number of test dataset')
-    add_arg('-t', '--threshold', type=float, default=0.015,
+    add_arg('-c', '--checkpoint', type=int, default=12,
+            help='Checkpoint number')
+    add_arg('-t', '--threshold', type=float, default=0.01,
             help='Threshold of correctness')
     return parser.parse_args()
 
@@ -55,10 +58,13 @@ def load_config(config_file):
         config = yaml.load(f, Loader=yaml.FullLoader)
     return config
 
-def get_test_dataloader(data_dir, n_test=None, **kwargs):
+def get_test_dataloader(data_dir, batch_size, n_test=None, **kwargs):
+    if data_dir is not None:
+        data_dir = os.path.expandvars(data_dir)
+        os.makedirs(data_dir, exist_ok=True)
     test_dataset = moving_mnist.MovingMNIST(os.path.join(data_dir, 'moving-mnist-test.npz'),
                                             n_samples=n_test)
-    test_loader = DataLoader(test_dataset)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
     return test_loader
 
 def test(model, device, test_loader, loss_config, threshold):
@@ -70,21 +76,21 @@ def test(model, device, test_loader, loss_config, threshold):
     loss_func = Loss(**loss_config)
     with torch.no_grad():
         for i, batch in enumerate(test_loader):
-            # batch = batch.to(device)
+            batch = batch.to(device)
             model.zero_grad()
             batch_input, batch_target = batch[:,:-1], batch[:,1:]
             batch_output = model(batch_input)
             batch_loss = loss_func(batch_output, batch_target).item()
-            logging.info('element %i loss %.3f', i, batch_loss)
-            if batch_loss < threshold:
+            logging.info('batch %i loss %.4f', i + 1, batch_loss)
+            if batch_loss <= threshold:
                 correct += 1
             test_loss += batch_loss
 
-    test_loss /= len(test_loader.dataset)
+    test_loss /= len(test_loader)
 
     logging.info('Test set: Average loss: %.4f, Accuracy: %i/%i (%.0f%%)\n', 
-        test_loss, correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset))
+        test_loss, correct, len(test_loader),
+        100. * correct / len(test_loader))
 
 
 def main():
@@ -112,19 +118,24 @@ def main():
     if rank == 0:
         logging.info('Configuration: %s' % config)
 
-    # Load the datasets
-    test_data_loader = get_test_dataloader(**config['data'], n_test=args.ntest)
-
-    # Load the trainer
     gpu = (rank % args.ranks_per_node) if args.rank_gpu else args.gpu
     if gpu is not None:
         logging.info('Using GPU %i', gpu)
+        device = torch.device("cuda:" + str(gpu))
+    else:
+        logging.info('Using CPU')
+        device = torch.device("cpu")
+
+    # Load the datasets
+    test_data_loader = get_test_dataloader(**config['data'], n_test=args.ntest)
 
     model = predrnn_pp.PredRNNPP()
-    checkpoint = torch.load(**config['test'])
+    checkpoint_idx = str(args.checkpoint) if args.checkpoint >= 100 else ('0' + str(args.checkpoint))
+    checkpoint = torch.load(os.path.join(output_dir, 'checkpoints', 'checkpoint_' + checkpoint_idx + '.pth.tar'), map_location=("cuda:" + str(gpu)))
     model.load_state_dict(checkpoint['model'])
+    model = model.to(device)
     loss_config = config['loss']
-    test(model, gpu, test_data_loader, loss_config, threshold=args.threshold)
+    test(model, device, test_data_loader, loss_config, threshold=args.threshold)
 
 if __name__ == '__main__':
     main()
